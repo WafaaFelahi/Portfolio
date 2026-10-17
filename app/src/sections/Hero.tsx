@@ -19,44 +19,74 @@ const item = {
 }
 
 export default function Hero() {
+  const scrollToNext = () => {
+    const next = document.getElementById('snowy-forest')
+    if (next) next.scrollIntoView({ behavior: 'smooth' })
+  }
+
   return (
-    <section className="relative h-screen min-h-[640px] w-full overflow-hidden bg-[#020617]">
-      {/* ------------------------------------------------ LEFT · 45% */}
-      <div className="relative z-10 flex h-full w-full flex-col justify-center px-8 sm:px-14 lg:px-24 xl:px-32">
+    <section id="hero" className="relative h-screen min-h-[640px] w-full overflow-hidden bg-[#020617]">
+      {/* ------------------------------------------- VISUAL · right 55% */}
+      <div className="pointer-events-none absolute inset-0 opacity-40 md:left-[42%] md:right-0 md:opacity-100">
+        <MoonScene />
+      </div>
+
+      {/* Soft vignette to melt the scene edges into the dark */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(2,6,23,0.75)_100%)]" />
+
+      {/* ------------------------------------------------ LEFT · text block */}
+      <div className="relative z-10 flex h-full w-full flex-col justify-start px-8 pt-[14vh] sm:px-14 lg:px-24 xl:px-32">
         <motion.div
           variants={container}
           initial="hidden"
           animate="show"
           className="max-w-xl"
         >
+          {/* Small label */}
           <motion.p
             variants={item}
-            className="mb-8 text-[11px] font-light uppercase tracking-[0.55em] text-slate-400"
+            className="mb-6 text-[11px] font-light uppercase tracking-[0.55em] text-slate-400"
           >
-            Lunossa
+            WAFA FELAHI
           </motion.p>
 
+          {/* Main headline */}
           <motion.h1
             variants={item}
-            className="font-display text-6xl font-light leading-[1.05] text-slate-100 sm:text-7xl lg:text-8xl"
+            className="font-display text-5xl font-light leading-[1.05] text-slate-100 sm:text-6xl lg:text-7xl xl:text-8xl"
           >
-            Wafa Felahi
+            Software
+            <br />
+            Engineer
           </motion.h1>
 
+          {/* Sub-role line */}
           <motion.p
             variants={item}
-            className="mt-6 font-display text-xl font-light italic text-slate-300 sm:text-2xl"
+            className="mt-4 font-display text-lg font-light italic text-[#A8C7FF] sm:text-xl"
           >
-            Software &amp; DevOps Engineer
+            Building Intelligent, Scalable Systems
           </motion.p>
 
+          {/* Tech stack tags */}
           <motion.p
             variants={item}
-            className="mt-10 text-[11px] font-light uppercase tracking-[0.3em] text-slate-500 sm:text-xs"
+            className="mt-6 text-[11px] font-light uppercase tracking-[0.3em] text-slate-500 sm:text-xs"
           >
-            Full-Stack Developer&nbsp;&nbsp;·&nbsp;&nbsp;Cloud &amp; DevOps
-            Engineer&nbsp;&nbsp;·&nbsp;&nbsp;ML/DL Practitioner
+            DevOps&nbsp;&nbsp;·&nbsp;&nbsp;MLOps&nbsp;&nbsp;·&nbsp;&nbsp;Full-Stack&nbsp;&nbsp;·&nbsp;&nbsp;Agentic AI
           </motion.p>
+
+          {/* CTA */}
+          <motion.div variants={item} className="mt-10">
+            <button
+              onClick={scrollToNext}
+              className="group relative overflow-hidden rounded-full border border-[#C4A77D]/40 px-8 py-3 text-[11px] font-light uppercase tracking-[0.4em] text-[#C4A77D] transition-all duration-500 hover:border-[#C4A77D] hover:text-white"
+            >
+              {/* gold glow on hover */}
+              <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-[#C4A77D]/20 to-transparent transition-transform duration-700 group-hover:translate-x-full" />
+              <span className="relative">Explore My Work</span>
+            </button>
+          </motion.div>
         </motion.div>
 
         {/* DESCEND — soft anchor at the bottom */}
@@ -80,15 +110,6 @@ export default function Hero() {
           </motion.span>
         </motion.div>
       </div>
-
-      {/* ------------------------------------------- VISUAL · right 55%
-          On small screens the same scene settles behind the text, dimmed. */}
-      <div className="pointer-events-none absolute inset-0 opacity-40 md:left-[45%] md:right-0 md:opacity-100">
-        <MoonScene />
-      </div>
-
-      {/* Soft vignette to melt the scene edges into the dark */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(2,6,23,0.75)_100%)]" />
     </section>
   )
 }
