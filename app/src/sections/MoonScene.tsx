@@ -241,13 +241,14 @@ const HIJAB_VERTEX = /* glsl */ `
     p.x += (s1 * 0.5 + s2 * 0.85) * uDriftAmp * pin;
     p.z += cos(p.y * uDriftFreq * 0.8 + uPhase + t * uSpeed * 0.8) * 0.30 * pin;
 
-    // Mouse influence (free fabric only)
+    // Mouse influence — only the middle/lower free fabric responds,
+    // never the pinned head attached to the moon
     vec4 wp = modelMatrix * vec4(p, 1.0);
     vec2 d = wp.xy - uMouse;
-    float free = smoothstep(0.15, 0.55, drop);
+    float free = smoothstep(0.28, 0.62, drop);
     float infl = exp(-dot(d, d) * 0.25) * uMouseStrength * free;
-    p.x += infl * 0.50 * sin(t * 1.2 + p.y * 1.8 + uPhase);
-    p.z += infl * 0.75;
+    p.x += infl * 0.40 * sin(t * 1.2 + p.y * 1.8 + uPhase);
+    p.z += infl * 0.65;
     vInfluence = infl;
 
     float slope = cos(p.y * uDriftFreq + uPhase + t * uSpeed) * uDriftFreq * uDriftAmp * pin;
