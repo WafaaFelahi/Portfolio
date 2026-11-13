@@ -11,8 +11,8 @@ import ProjectModal from '../components/ProjectModal'
 /*  x = a·cos(t) / (1 + sin²(t))                                      */
 /*  z = a·sin(t)·cos(t) / (1 + sin²(t))                               */
 /* ------------------------------------------------------------------ */
-const LOOP_SCALE = 3.8
-const LOOP_HEIGHT = 0.6 // elevation above water
+const LOOP_SCALE = 4.5
+const LOOP_HEIGHT = 0.75 // elevation above water
 
 function lemniscate(t: number): [number, number, number] {
   const sin = Math.sin(t)
@@ -49,31 +49,39 @@ const PHASE_FRAG = /* glsl */ `
   void main() {
     vec3 N = normalize(vNormal);
 
-    // Terminator based on phase angle
-    float lit = sin(uPhaseAngle) * N.x + cos(uPhaseAngle) * N.z;
-    float terminator = smoothstep(-0.05, 0.25, lit);
+    // Light direction in view space according to lunar orbit phase
+    vec3 L = normalize(vec3(sin(uPhaseAngle), 0.0, -cos(uPhaseAngle)));
+    float diff = dot(N, L);
+    float terminator = smoothstep(-0.08, 0.16, diff);
 
-    // Base colour from near-black to bright white
-    vec3 col = uColor * (0.08 + 0.95 * terminator);
-    col += vec3(0.6, 0.7, 1.0) * pow(1.0 - abs(dot(N, vec3(0,0,1))), 3.0) * 0.3;
+    // Ethereal rim glow for limb definition
+    float rim = pow(1.0 - clamp(abs(N.z), 0.0, 1.0), 3.0);
 
-    // Glow pulse
-    col += uColor * uGlow * 0.6;
+    // Base phase illumination
+    vec3 darkBase = vec3(0.04, 0.05, 0.10);
+    vec3 litBase = mix(uColor, vec3(0.96, 0.98, 1.0), 0.35);
+    vec3 col = mix(darkBase, litBase, terminator);
+
+    // Add celestial rim highlight
+    col += vec3(0.65, 0.75, 1.0) * rim * 0.45;
+
+    // Active glow on hover
+    col += (uColor + vec3(0.25, 0.35, 0.6)) * uGlow * 0.65;
 
     gl_FragColor = vec4(col, 1.0);
   }
 `
 
-// Maps index 0-7 to phase angle: 0=new, 4=full
+// Maps index 0-7 to phase angle: 0=new, π=full
 const PHASE_ANGLES = [
-  0.05,                // new moon
-  Math.PI * 0.25,      // waxing crescent
-  Math.PI * 0.5,       // first quarter
-  Math.PI * 0.75,      // waxing gibbous
-  Math.PI,             // full moon
-  Math.PI * 1.25,      // waning gibbous
-  Math.PI * 1.5,       // last quarter
-  Math.PI * 1.75,      // waning crescent
+  0.0,                 // 1. new moon
+  Math.PI * 0.25,      // 2. waxing crescent
+  Math.PI * 0.5,       // 3. first quarter
+  Math.PI * 0.75,      // 4. waxing gibbous
+  Math.PI,             // 5. full moon
+  Math.PI * 1.25,      // 6. waning gibbous
+  Math.PI * 1.5,       // 7. last quarter
+  Math.PI * 1.75,      // 8. waning crescent
 ]
 
 function MoonNode({
@@ -91,8 +99,12 @@ function MoonNode({
   const [hovered, setHovered] = useState(false)
   const glowRef = useRef(0)
 
-  const baseColor = new THREE.Color(project.color)
-  const radius = 0.18 + project.brightness * 0.18 // full moon is biggest
+  const baseColor = useMemo(() => new THREE.Color(project.color), [project.color])
+  // Target sizing: ~80-100px diameter on laptop screens
+  const radius = 0.56 + project.brightness * 0.14
+
+  const phaseIndex = (project.id - 1) % 8
+  const phaseAngle = PHASE_ANGLES[phaseIndex]
 
   const material = useMemo(
     () =>
@@ -100,27 +112,26 @@ function MoonNode({
         vertexShader: PHASE_VERT,
         fragmentShader: PHASE_FRAG,
         uniforms: {
-          uPhaseAngle: { value: PHASE_ANGLES[project.id - 1] },
+          uPhaseAngle: { value: phaseAngle },
           uColor: { value: baseColor },
           uGlow: { value: 0.0 },
         },
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project.id, project.color],
+    [phaseAngle, baseColor],
   )
 
   useFrame((_, delta) => {
     // Scale on hover
-    const targetScale = hovered ? 1.35 : 1.0
+    const targetScale = hovered ? 1.22 : 1.0
     meshRef.current.scale.lerp(
       new THREE.Vector3(targetScale, targetScale, targetScale),
       Math.min(1, delta * 8),
     )
     // Glow pulse
-    const targetGlow = hovered ? 0.8 + Math.sin(Date.now() * 0.004) * 0.2 : 0.0
+    const targetGlow = hovered ? 0.85 + Math.sin(Date.now() * 0.005) * 0.2 : 0.0
     glowRef.current = THREE.MathUtils.lerp(glowRef.current, targetGlow, delta * 6)
     material.uniforms.uGlow.value = glowRef.current
-    // Counter-rotate so moons stay face-on
+    // Counter-rotate so moons stay face-on to the viewer
     meshRef.current.rotation.y = -groupRotation
   })
 
@@ -131,31 +142,60 @@ function MoonNode({
       ref={meshRef}
       position={[x, y, z]}
       material={material}
-      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
-      onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto' }}
-      onClick={(e) => { e.stopPropagation(); onClick(project) }}
+      onPointerOver={(e) => {
+        e.stopPropagation()
+        setHovered(true)
+        document.body.style.cursor = 'pointer'
+      }}
+      onPointerOut={() => {
+        setHovered(false)
+        document.body.style.cursor = 'auto'
+      }}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick(project)
+      }}
     >
-      <sphereGeometry args={[radius, 32, 32]} />
+      <sphereGeometry args={[radius, 48, 48]} />
       {hovered && (
-        <Html distanceFactor={6} center>
+        <Html distanceFactor={7.5} center>
           <div
             style={{
-              background: 'rgba(5,8,24,0.88)',
-              border: '1px solid rgba(196,167,125,0.4)',
+              background: 'rgba(5,8,24,0.92)',
+              border: '1px solid rgba(196,167,125,0.45)',
               borderRadius: '12px',
               padding: '10px 16px',
-              width: '180px',
+              width: '210px',
               textAlign: 'center',
-              backdropFilter: 'blur(8px)',
+              backdropFilter: 'blur(10px)',
               pointerEvents: 'none',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.6), 0 0 20px rgba(168,199,255,0.1)',
             }}
           >
+            <div style={{ marginBottom: '4px' }}>
+              <span
+                style={{
+                  fontSize: '9px',
+                  padding: '2px 8px',
+                  borderRadius: '999px',
+                  background: 'rgba(196,167,125,0.2)',
+                  color: '#E8D5B5',
+                  fontWeight: 500,
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {project.category}
+              </span>
+            </div>
             <p
               style={{
                 fontFamily: "'Cormorant Garamond', serif",
                 fontSize: '14px',
+                fontWeight: 500,
                 color: '#fff',
                 margin: '0 0 6px',
+                lineHeight: '1.25',
               }}
             >
               {project.title}
@@ -168,10 +208,10 @@ function MoonNode({
                     fontSize: '9px',
                     padding: '2px 7px',
                     borderRadius: '999px',
-                    background: 'rgba(196,167,125,0.18)',
-                    color: '#C4A77D',
+                    background: 'rgba(168,199,255,0.12)',
+                    color: '#A8C7FF',
                     textTransform: 'uppercase',
-                    letterSpacing: '0.05em',
+                    letterSpacing: '0.04em',
                   }}
                 >
                   {t}
@@ -186,7 +226,7 @@ function MoonNode({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Reflection strip on water below the loop                           */
+/*  Reflection strip on water below the loop (subtle water ripple dots)*/
 /* ------------------------------------------------------------------ */
 function LoopReflection({ rotation }: { rotation: number }) {
   const ref = useRef<THREE.Group>(null!)
@@ -196,15 +236,17 @@ function LoopReflection({ rotation }: { rotation: number }) {
   return (
     <group ref={ref}>
       {projects.map((p, i) => {
-        const t = (i / projects.length) * Math.PI * 2
+        const t = (i / projects.length) * Math.PI * 2 + Math.PI / 8
         const [x, , z] = lemniscate(t)
         return (
-          <mesh key={p.id} position={[x, -0.48, z]}>
-            <sphereGeometry args={[(0.1 + p.brightness * 0.1) * 0.6, 8, 8]} />
+          <mesh key={p.id} position={[x, -0.48, z]} rotation={[-Math.PI / 2, 0, 0]}>
+            {/* Subtle small water ripple disk (under 25px in size) */}
+            <circleGeometry args={[0.2 + p.brightness * 0.1, 16]} />
             <meshBasicMaterial
               color={p.color}
               transparent
-              opacity={0.22 + p.brightness * 0.12}
+              opacity={0.2 + p.brightness * 0.15}
+              depthWrite={false}
             />
           </mesh>
         )
@@ -221,7 +263,7 @@ function InfinityLoop({ onSelect }: { onSelect: (p: Project) => void }) {
   const rotRef = useRef(0)
 
   useFrame((_, delta) => {
-    rotRef.current += delta * 0.18
+    rotRef.current += delta * 0.16
     if (groupRef.current) groupRef.current.rotation.y = rotRef.current
   })
 
@@ -229,7 +271,8 @@ function InfinityLoop({ onSelect }: { onSelect: (p: Project) => void }) {
     <>
       <group ref={groupRef}>
         {projects.map((p, i) => {
-          const t = (i / projects.length) * Math.PI * 2
+          // Offset by π/8 so no two moons ever coincide at the lemniscate center
+          const t = (i / projects.length) * Math.PI * 2 + Math.PI / 8
           return (
             <MoonNode
               key={p.id}
@@ -285,10 +328,12 @@ function GalleryWater() {
       }),
     [],
   )
-  useFrame((s) => { mat.uniforms.uTime.value = s.clock.elapsedTime })
+  useFrame((s) => {
+    mat.uniforms.uTime.value = s.clock.elapsedTime
+  })
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]} material={mat}>
-      <planeGeometry args={[20, 20, 32, 32]} />
+      <planeGeometry args={[22, 22, 32, 32]} />
     </mesh>
   )
 }
@@ -299,15 +344,30 @@ function GalleryWater() {
 function GalleryScene({ onSelect }: { onSelect: (p: Project) => void }) {
   return (
     <>
-      <ambientLight intensity={0.2} color="#2030a0" />
+      <ambientLight intensity={0.25} color="#2030a0" />
       <pointLight position={[0, 6, 0]} intensity={1.8} color="#a0b0ff" />
       <pointLight position={[4, 2, 4]} intensity={0.5} color="#c4a77d" />
       <pointLight position={[-4, 2, -4]} intensity={0.5} color="#c4a77d" />
-      {/* Moon overhead */}
+
+      {/* Distant background sky moon */}
       <mesh position={[0, 10, -12]}>
-        <sphereGeometry args={[1.8, 32, 32]} />
+        <sphereGeometry args={[1.6, 32, 32]} />
         <meshStandardMaterial color="#e0e8ff" emissive="#8090d0" emissiveIntensity={0.6} />
       </mesh>
+
+      {/* Distant decorative celestial moons in the deep background (kept tiny, ~15-20px) */}
+      {[
+        { pos: [-6, 6, -14], r: 0.28, color: '#3d4868', opacity: 0.35 },
+        { pos: [7, 7, -15], r: 0.25, color: '#323c58', opacity: 0.3 },
+        { pos: [-4, 8, -16], r: 0.22, color: '#455278', opacity: 0.25 },
+        { pos: [5, 5, -13], r: 0.24, color: '#404c70', opacity: 0.3 },
+      ].map((m, idx) => (
+        <mesh key={idx} position={m.pos as [number, number, number]}>
+          <sphereGeometry args={[m.r, 16, 16]} />
+          <meshBasicMaterial color={m.color} transparent opacity={m.opacity} />
+        </mesh>
+      ))}
+
       <GalleryWater />
       <InfinityLoop onSelect={onSelect} />
     </>
@@ -322,7 +382,7 @@ function AutoCamera() {
     const t = state.clock.elapsedTime
     state.camera.position.x = Math.sin(t * 0.07) * 1.2
     state.camera.position.y = 2.8 + Math.sin(t * 0.05) * 0.3
-    state.camera.lookAt(0, 0.6, 0)
+    state.camera.lookAt(0, 0.7, 0)
   })
   return null
 }
@@ -389,10 +449,10 @@ export default function InfinityMoonGallery() {
           <button
             key={p.id}
             onClick={() => setSelected(p)}
-            className="group flex items-center gap-2 text-[10px] uppercase tracking-[0.4em] text-slate-600 transition-colors hover:text-slate-300"
+            className="group flex items-center gap-2 text-[10px] uppercase tracking-[0.4em] text-slate-400 transition-colors hover:text-slate-200"
           >
             <span
-              className="inline-block h-1.5 w-1.5 rounded-full transition-all duration-300 group-hover:scale-125"
+              className="inline-block h-2 w-2 rounded-full transition-all duration-300 group-hover:scale-125"
               style={{ background: p.color || '#555' }}
             />
             {p.phase.replace(/-/g, ' ')}

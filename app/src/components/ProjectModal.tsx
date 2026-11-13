@@ -63,10 +63,23 @@ export default function ProjectModal({ project, onClose }: ProjectModalProps) {
             />
 
             <div className="p-8">
-              {/* Phase badge */}
-              <p className="mb-3 text-[10px] uppercase tracking-[0.5em] text-[#A8C7FF]/50">
-                {project.phase.replace(/-/g, ' ')}
-              </p>
+              {/* Phase & Category badge */}
+              <div className="mb-3 flex flex-wrap items-center gap-2.5">
+                <p className="text-[10px] font-medium uppercase tracking-[0.5em] text-[#A8C7FF]/70">
+                  {project.phase.replace(/-/g, ' ')}
+                </p>
+                {project.category && (
+                  <span
+                    className="rounded-full px-2.5 py-0.5 text-[10px] font-medium tracking-wider text-[#C4A77D]"
+                    style={{
+                      background: 'rgba(196,167,125,0.12)',
+                      border: '1px solid rgba(196,167,125,0.35)',
+                    }}
+                  >
+                    {project.category}
+                  </span>
+                )}
+              </div>
 
               {/* Title */}
               <h3 className="font-display text-3xl font-light text-white sm:text-4xl">
@@ -97,7 +110,7 @@ export default function ProjectModal({ project, onClose }: ProjectModalProps) {
 
               {/* CTA buttons */}
               <div className="mt-8 flex gap-4">
-                {project.liveUrl && project.liveUrl !== '#' && (
+                {project.liveUrl && project.liveUrl !== '#' && project.liveUrl.trim() !== '' && (
                   <a
                     href={project.liveUrl}
                     target="_blank"
