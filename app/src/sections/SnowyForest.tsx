@@ -1,6 +1,7 @@
-import { useRef, useMemo } from 'react'
+import { useRef, useMemo, Suspense } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame } from '@react-three/fiber'
+import { useGLTF } from '@react-three/drei'
 import { motion } from 'framer-motion'
 
 /* ------------------------------------------------------------------ */
@@ -90,69 +91,54 @@ function PineTree({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Walking figure with lotus-shaped dress                             */
+/*  Woman from GLB — viewed from the back, long white hair & dress     */
 /* ------------------------------------------------------------------ */
-function LotusWoman() {
+const WOMAN_MODEL_PATH = './models/woman/woman.glb'
+
+function WomanModel() {
+  const { scene } = useGLTF(WOMAN_MODEL_PATH)
   const groupRef = useRef<THREE.Group>(null!)
-  const dressRef = useRef<THREE.Mesh>(null!)
+
+  // Clone the scene so we can use it in the component tree without
+  // mutating the cached original
+  const clone = useMemo(() => {
+    const c = scene.clone(true)
+    // Ensure all meshes receive shadows and have good material quality
+    c.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        // If the material is a standard PBR material, tweak for the scene
+        if ((mesh.material as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+          const mat = mesh.material as THREE.MeshStandardMaterial
+          mat.envMapIntensity = 0.6
+          mat.needsUpdate = true
+        }
+      }
+    })
+    return c
+  }, [scene])
 
   useFrame((state) => {
     const t = state.clock.elapsedTime
     if (groupRef.current) {
-      // gentle sway
-      groupRef.current.rotation.y = Math.sin(t * 0.4) * 0.06
-      groupRef.current.position.x = Math.sin(t * 0.3) * 0.15
-    }
-    if (dressRef.current) {
-      dressRef.current.rotation.y = t * 0.2
+      // Subtle idle sway — very gentle so it feels alive
+      groupRef.current.rotation.y = Math.PI + Math.sin(t * 0.35) * 0.04
+      groupRef.current.position.x = Math.sin(t * 0.25) * 0.08
+      groupRef.current.position.y = -1.5 + Math.sin(t * 0.4) * 0.03
     }
   })
 
   return (
-    <group ref={groupRef} position={[0, -0.5, 0]}>
-      {/* Head */}
-      <mesh position={[0, 3.0, 0]}>
-        <sphereGeometry args={[0.22, 16, 16]} />
-        <meshStandardMaterial color="#f0e0cc" />
-      </mesh>
-      {/* Hair — dark ellipsoid */}
-      <mesh position={[0, 3.12, 0]}>
-        <sphereGeometry args={[0.24, 16, 16]} />
-        <meshStandardMaterial color="#1a0e06" />
-      </mesh>
-      {/* Body */}
-      <mesh position={[0, 2.1, 0]}>
-        <cylinderGeometry args={[0.14, 0.22, 1.8, 12]} />
-        <meshStandardMaterial color="#f5f5f8" roughness={0.4} transparent opacity={0.95} />
-      </mesh>
-      {/* Lotus dress — 12 petals using flat triangular fans */}
-      <group ref={dressRef} position={[0, 1.0, 0]}>
-        {Array.from({ length: 12 }).map((_, i) => {
-          const angle = (i / 12) * Math.PI * 2
-          const x = Math.cos(angle) * 0.55
-          const z = Math.sin(angle) * 0.55
-          return (
-            <mesh key={i} position={[x * 0.5, 0, z * 0.5]} rotation={[0.25, angle, 0]}>
-              <coneGeometry args={[0.28, 1.1, 4]} />
-              <meshStandardMaterial
-                color="#f0f4ff"
-                roughness={0.25}
-                transparent
-                opacity={0.82}
-                side={THREE.DoubleSide}
-              />
-            </mesh>
-          )
-        })}
-        {/* Centre disc */}
-        <mesh position={[0, 0.15, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <circleGeometry args={[0.3, 16]} />
-          <meshStandardMaterial color="#ffffff" roughness={0.3} transparent opacity={0.9} />
-        </mesh>
-      </group>
+    <group ref={groupRef} position={[0, -1.5, 0]} rotation={[0, Math.PI, 0]} scale={[1.8, 1.8, 1.8]}>
+      <primitive object={clone} />
     </group>
   )
 }
+
+// Preload the model
+useGLTF.preload(WOMAN_MODEL_PATH)
 
 /* ------------------------------------------------------------------ */
 /*  Ground — snow plane with faint footsteps                           */
@@ -179,15 +165,25 @@ function ForestScene() {
 
   return (
     <>
-      <ambientLight intensity={0.3} color="#6080b0" />
+      <ambientLight intensity={0.25} color="#4a6088" />
       <directionalLight
         position={[3, 8, 5]}
-        intensity={0.9}
-        color="#a0b8e8"
+        intensity={0.7}
+        color="#8aa8d8"
         castShadow
       />
+      {/* Cool moonlight from above-behind */}
+      <directionalLight
+        position={[-2, 6, -4]}
+        intensity={0.4}
+        color="#6080c0"
+      />
+      {/* Gentle fill from front-low to see the woman silhouette */}
+      <pointLight position={[0, 2, 6]} intensity={0.3} color="#7090b8" />
       {/* God-ray fill from dawn sky */}
-      <pointLight position={[0, 10, 5]} intensity={0.5} color="#c0d4f8" />
+      <pointLight position={[0, 10, 5]} intensity={0.4} color="#c0d4f8" />
+      {/* Rim light behind woman for ethereal back-lighting */}
+      <pointLight position={[0, 4, -3]} intensity={0.6} color="#8ab0e8" />
 
       <SnowGround />
       <SnowParticles count={2200} />
@@ -196,7 +192,9 @@ function ForestScene() {
         <PineTree key={i} position={pos} scale={0.8 + Math.random() * 0.6} />
       ))}
 
-      <LotusWoman />
+      <Suspense fallback={null}>
+        <WomanModel />
+      </Suspense>
 
       {/* Soft mist plane */}
       <mesh position={[0, -0.8, -6]} rotation={[-Math.PI / 2, 0, 0]}>

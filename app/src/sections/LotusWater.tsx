@@ -1,6 +1,7 @@
-import { useRef, useMemo } from 'react'
+import { useRef, useMemo, Suspense } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame } from '@react-three/fiber'
+import { useGLTF } from '@react-three/drei'
 import { motion } from 'framer-motion'
 
 /* ------------------------------------------------------------------ */
@@ -44,9 +45,9 @@ const WATER_FRAG = /* glsl */ `
     float ripple2 = fbm(uv * 4.0 - vec2(uTime * 0.2, uTime * 0.35));
     float ripple  = ripple1 * 0.6 + ripple2 * 0.4;
 
-    // base water colour — deep midnight blue
-    vec3 deepWater = vec3(0.02, 0.06, 0.14);
-    vec3 shallow   = vec3(0.05, 0.10, 0.22);
+    // base water colour — lighter, cleaner water for the lotus
+    vec3 deepWater = vec3(0.04, 0.09, 0.20);
+    vec3 shallow   = vec3(0.08, 0.16, 0.32);
     vec3 water = mix(deepWater, shallow, ripple);
 
     // moon reflection column
@@ -69,7 +70,6 @@ const WATER_FRAG = /* glsl */ `
 `
 
 function WaterPlane() {
-  const matRef = useRef<THREE.ShaderMaterial>(null!)
   const material = useMemo(
     () =>
       new THREE.ShaderMaterial({
@@ -119,115 +119,58 @@ function Moon() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Lotus flower — 12 curved petals + centre                          */
+/*  Lotus flower — loaded from high-quality GLB model                  */
 /* ------------------------------------------------------------------ */
-const PETAL_VERT = /* glsl */ `
-  uniform float uTime;
-  uniform float uIndex;
-  uniform float uOpen;
-  varying vec2 vUv;
-
-  void main() {
-    vUv = uv;
-    vec3 p = position;
-    float t = uTime * 0.5 + uIndex * 0.4;
-    // gentle breathing
-    p.y += sin(t) * 0.015 * uOpen;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-  }
-`
-
-const PETAL_FRAG = /* glsl */ `
-  uniform float uOpacity;
-  varying vec2 vUv;
-  void main() {
-    float d = length(vUv - vec2(0.5, 0.0));
-    float a = 1.0 - smoothstep(0.28, 0.52, d);
-    a *= uOpacity;
-    vec3 col = mix(vec3(0.95,0.97,1.0), vec3(0.82,0.88,1.0), vUv.y);
-    gl_FragColor = vec4(col, a);
-  }
-`
-
-function LotusPetal({ index, total }: { index: number; total: number }) {
-  const matRef = useRef<THREE.ShaderMaterial>(null!)
-  const angle = (index / total) * Math.PI * 2
-  const r = 0.65
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: PETAL_VERT,
-        fragmentShader: PETAL_FRAG,
-        uniforms: {
-          uTime: { value: 0 },
-          uIndex: { value: index },
-          uOpen: { value: 1.0 },
-          uOpacity: { value: 0.88 },
-        },
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    [index],
-  )
-
-  useFrame((state) => {
-    material.uniforms.uTime.value = state.clock.elapsedTime
-  })
-
-  return (
-    <mesh
-      position={[Math.cos(angle) * r * 0.55, 0.02, Math.sin(angle) * r * 0.55]}
-      rotation={[0.32, angle, 0]}
-      material={material}
-    >
-      <planeGeometry args={[0.55, 0.9, 4, 8]} />
-    </mesh>
-  )
-}
+const LOTUS_MODEL_PATH = './models/lotus/lotus.glb'
 
 function LotusFlower() {
+  const { scene } = useGLTF(LOTUS_MODEL_PATH)
   const groupRef = useRef<THREE.Group>(null!)
+
+  const clone = useMemo(() => {
+    const c = scene.clone(true)
+    c.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        mesh.material = new THREE.MeshPhysicalMaterial({
+          color: '#ffffff',
+          emissive: '#f4f7ff',
+          emissiveIntensity: 0.22,
+          roughness: 0.38,
+          metalness: 0.0,
+          sheen: 1,
+          sheenColor: '#ffffff',
+          sheenRoughness: 0.45,
+          clearcoat: 0.18,
+          clearcoatRoughness: 0.4,
+          side: THREE.DoubleSide,
+        })
+      }
+    })
+    return c
+  }, [scene])
+
   useFrame((state) => {
     if (groupRef.current) {
-      groupRef.current.rotation.y = state.clock.elapsedTime * 0.12
-      groupRef.current.position.y = -0.35 + Math.sin(state.clock.elapsedTime * 0.6) * 0.04
+      const t = state.clock.elapsedTime
+      // Slow, elegant rotation
+      groupRef.current.rotation.y = t * 0.1
+      // Gentle floating bob on the water
+      groupRef.current.position.y = -0.3 + Math.sin(t * 0.5) * 0.06
     }
   })
 
   return (
-    <group ref={groupRef}>
-      {Array.from({ length: 12 }).map((_, i) => (
-        <LotusPetal key={i} index={i} total={12} />
-      ))}
-      {/* Inner ring, smaller petals */}
-      {Array.from({ length: 8 }).map((_, i) => {
-        const a = (i / 8) * Math.PI * 2 + Math.PI / 8
-        return (
-          <mesh
-            key={`inner-${i}`}
-            position={[Math.cos(a) * 0.3, 0.05, Math.sin(a) * 0.3]}
-            rotation={[0.55, a, 0]}
-          >
-            <planeGeometry args={[0.28, 0.5, 2, 4]} />
-            <meshStandardMaterial
-              color="#f0f4ff"
-              transparent
-              opacity={0.75}
-              side={THREE.DoubleSide}
-              roughness={0.2}
-            />
-          </mesh>
-        )
-      })}
-      {/* Centre stamen */}
-      <mesh position={[0, 0.12, 0]}>
-        <sphereGeometry args={[0.18, 12, 12]} />
-        <meshStandardMaterial color="#f8e87a" emissive="#c0a020" emissiveIntensity={0.35} roughness={0.4} />
-      </mesh>
+    <group ref={groupRef} position={[0, -0.3, 0]} scale={[1.2, 1.2, 1.2]}>
+      <primitive object={clone} />
     </group>
   )
 }
+
+// Preload the model
+useGLTF.preload(LOTUS_MODEL_PATH)
 
 /* ------------------------------------------------------------------ */
 /*  Mist layer                                                         */
@@ -254,13 +197,26 @@ function Mist() {
 function LotusScene() {
   return (
     <>
-      <ambientLight intensity={0.25} color="#3050a0" />
-      <pointLight position={[0, 6, -7]} intensity={2.5} color="#c0ccff" />
-      <pointLight position={[0, 1, 2]} intensity={0.6} color="#8090e0" />
+      <ambientLight intensity={0.2} color="#2a4070" />
+      {/* Main moonlight from above */}
+      <pointLight position={[0, 6, -7]} intensity={2.0} color="#c0ccff" />
+      {/* Soft frontal fill to illuminate the lotus */}
+      <pointLight position={[0, 2, 4]} intensity={0.8} color="#8090e0" />
+      {/* Warm accent from below for the lotus surface */}
+      <pointLight position={[0, 0.5, 0]} intensity={0.4} color="#a0b0d0" />
+      {/* Rim light behind for depth */}
+      <directionalLight position={[0, 3, -5]} intensity={0.5} color="#6080c0" />
+
+      {/* Lotus fill — white ambient + directional key/rim */}
+      <ambientLight intensity={0.55} color="#ffffff" />
+      <directionalLight position={[1.5, 4.5, 3]} intensity={1.8} color="#fff8f0" />
+      <directionalLight position={[-2, 2.5, -1]} intensity={0.6} color="#e8eeff" />
 
       <Moon />
       <WaterPlane />
-      <LotusFlower />
+      <Suspense fallback={null}>
+        <LotusFlower />
+      </Suspense>
       <Mist />
 
       {/* Distant forest silhouette */}
