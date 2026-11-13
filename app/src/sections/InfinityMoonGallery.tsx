@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useCallback } from 'react'
 import * as THREE from 'three'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { motion } from 'framer-motion'
 import { projects, type Project } from '../data/projects'

@@ -361,7 +361,7 @@ const CROWN_FRAGMENT = /* glsl */ `
 function CrownCap({
   moonPos,
   moonRadius,
-  mouse,
+  mouse: _mouse,
 }: {
   moonPos: [number, number, number]
   moonRadius: number
