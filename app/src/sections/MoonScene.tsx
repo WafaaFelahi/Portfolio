@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useEffect } from 'react'
+import { useMemo, useEffect, Suspense } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useTexture } from '@react-three/drei'
@@ -47,15 +47,25 @@ function useWindowMouse(): MouseState {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Textured moon — NASA photographic surface (shared component)      */
+/*  Scene constants                                                   */
+/* ------------------------------------------------------------------ */
+const MOON_POS: [number, number, number] = [0.15, 1.18, -0.8]
+const MOON_RADIUS = 1.0
+
+/* ------------------------------------------------------------------ */
+/*  STEP 2: Textured moon with 3D Fresnel rim glow                     */
 /* ------------------------------------------------------------------ */
 const MOON_VERTEX = /* glsl */ `
   varying vec3 vNormal;
   varying vec2 vUv;
+  varying vec3 vViewPosition;
+
   void main() {
     vUv = uv;
     vNormal = normalize(normalMatrix * normal);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vViewPosition = -mvPos.xyz;
+    gl_Position = projectionMatrix * mvPos;
   }
 `
 
@@ -63,6 +73,7 @@ const MOON_FRAGMENT = /* glsl */ `
   uniform sampler2D uMap;
   varying vec3 vNormal;
   varying vec2 vUv;
+  varying vec3 vViewPosition;
 
   float lum(vec2 uv) {
     vec3 c = texture2D(uMap, uv).rgb;
@@ -71,28 +82,33 @@ const MOON_FRAGMENT = /* glsl */ `
 
   void main() {
     vec3 N = normalize(vNormal);
+    vec3 V = normalize(vViewPosition);
 
-    // Bump relief derived from the photographic surface itself
+    // Bump relief derived from photographic lunar topography
     vec2 e = vec2(1.0 / 2048.0, 0.0);
     float hC = lum(vUv);
     float hX = lum(vUv + e.xy);
     float hY = lum(vUv + e.yx);
-    vec3 bump = normalize(N + vec3(-(hX - hC), -(hY - hC), 0.0) * 9.0);
+    vec3 bump = normalize(N + vec3(-(hX - hC), -(hY - hC), 0.0) * 8.0);
 
     // Soft frontal light with a wide, gentle terminator
-    vec3 L = normalize(vec3(0.42, 0.34, 0.84));
+    vec3 L = normalize(vec3(0.38, 0.32, 0.86));
     float diff = clamp(dot(bump, L), 0.0, 1.0);
     float terminator = smoothstep(-0.05, 0.85, diff);
 
     vec3 base = texture2D(uMap, vUv).rgb;
-    base = mix(base, base * vec3(0.92, 0.97, 1.10), 0.45); // cool moonlight cast
+    base = mix(base, base * vec3(0.92, 0.97, 1.10), 0.40); // cool moonlight cast
 
-    vec3 col = base * (0.22 + 0.95 * terminator);
-    col += vec3(0.08, 0.11, 0.20) * (0.3 + 0.7 * terminator) * 0.40;
+    // Slightly tone down the core brightness by ~12% so the 3D rim glow pops
+    vec3 col = base * (0.19 + 0.83 * terminator);
+    col += vec3(0.07, 0.10, 0.18) * (0.3 + 0.7 * terminator) * 0.35;
 
-    // Ethereal limb glow
-    float fres = pow(1.0 - clamp(dot(N, vec3(0.0, 0.0, 1.0)), 0.0, 1.0), 3.0);
-    col += vec3(0.60, 0.72, 1.0) * fres * 0.65;
+    // STEP 2: 3D Fresnel-based rim glow following the sphere's curvature naturally
+    // fresnel = pow(1.0 - dot(normal, viewDir), 3.0)
+    float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+    vec3 rimColor = vec3(0.72, 0.83, 1.0); // #b8d4ff cool icy blue
+    float rimIntensity = 0.75;
+    col += fresnel * rimColor * rimIntensity;
 
     gl_FragColor = vec4(col, 1.0);
   }
@@ -116,7 +132,7 @@ export function useMoonMaterial() {
   )
 }
 
-/** Photographic NASA-textured moon with soft glow shading. */
+/** Photographic NASA-textured moon with 3D curvature fresnel shading. */
 export function TexturedMoon({
   radius = 1,
   position = [0, 0, 0] as [number, number, number],
@@ -137,7 +153,7 @@ export function TexturedMoon({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Halo — soft additive radial glow planes behind the moon            */
+/*  Photographic atmospheric corona halo behind the moon               */
 /* ------------------------------------------------------------------ */
 const HALO_VERTEX = /* glsl */ `
   varying vec2 vUv;
@@ -153,8 +169,8 @@ const HALO_FRAGMENT = /* glsl */ `
   varying vec2 vUv;
   void main() {
     float d = distance(vUv, vec2(0.5)) * 2.0;
-    float a = pow(max(0.0, 1.0 - d), 2.4);
-    gl_FragColor = vec4(uColor, a * uIntensity);
+    float a = pow(max(0.0, 1.0 - d), 2.5);
+    gl_FragColor = vec4(uColor * a * uIntensity, a * uIntensity);
   }
 `
 
@@ -192,299 +208,373 @@ function Halo({
 }
 
 /* ------------------------------------------------------------------ */
-/*  HIJAB — wraps over the top of the moon like a real headscarf       */
-/*  - Crown cap covers the top hemisphere                              */
-/*  - Multiple falling ribbons drape from behind & around the sides    */
-/*  - Front panel partially covers the lower-front face                */
+/*  STEP 7: Subtle god-rays extending downward from the moon           */
 /* ------------------------------------------------------------------ */
-
-const HIJAB_VERTEX = /* glsl */ `
-  uniform float uTime;
-  uniform vec2 uMouse;
-  uniform float uMouseStrength;
-  uniform float uPhase;
-  uniform float uDriftAmp;
-  uniform float uDriftFreq;
-  uniform float uSpeed;
-  // 0=back-ribbon  1=crown  2=side  3=front-drape
-  uniform int uMode;
+const GOD_RAYS_VERTEX = /* glsl */ `
   varying vec2 vUv;
-  varying float vShade;
-  varying float vInfluence;
-
   void main() {
     vUv = uv;
-    vec3 p = position;
-
-    float t = uTime;
-    float drop = 1.0 - uv.y;          // 0 at top → 1 at free end
-    float pin  = smoothstep(0.04, 0.35, drop);  // how much this vertex is free
-
-    // ------- CROWN CAP (mode 1): dome draped over the top hemisphere -------
-    if (uMode == 1) {
-      // Very gentle dome ripple, no mouse influence on the cap
-      p.z += sin(uv.x * 3.14159 + t * 0.3 + uPhase) * 0.04;
-      p.x += cos(uv.y * 3.14159 + t * 0.25 + uPhase) * 0.035;
-      vShade = 0.0;
-      vInfluence = 0.0;
-      gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(p, 1.0);
-      return;
-    }
-
-    // ------- BACK / SIDE RIBBONS (mode 0, 2) --------------------------------
-    // Fabric ripple across the width
-    p.z += sin(uv.x * 6.2831 + p.y * 0.9 + uPhase) * 0.09 * pin;
-
-    // Long s-curve drift
-    float s1 = sin(p.y * uDriftFreq + uPhase + t * uSpeed);
-    float s2 = sin(p.y * uDriftFreq * 0.45 - t * uSpeed * 0.6 + uPhase * 1.7);
-    p.x += (s1 * 0.5 + s2 * 0.85) * uDriftAmp * pin;
-    p.z += cos(p.y * uDriftFreq * 0.8 + uPhase + t * uSpeed * 0.8) * 0.30 * pin;
-
-    // Mouse influence — only the middle/lower free fabric responds,
-    // never the pinned head attached to the moon
-    vec4 wp = modelMatrix * vec4(p, 1.0);
-    vec2 d = wp.xy - uMouse;
-    float free = smoothstep(0.28, 0.62, drop);
-    float infl = exp(-dot(d, d) * 0.25) * uMouseStrength * free;
-    p.x += infl * 0.40 * sin(t * 1.2 + p.y * 1.8 + uPhase);
-    p.z += infl * 0.65;
-    vInfluence = infl;
-
-    float slope = cos(p.y * uDriftFreq + uPhase + t * uSpeed) * uDriftFreq * uDriftAmp * pin;
-    vShade = clamp(slope * 0.55, -0.9, 0.9);
-
-    gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `
 
-const HIJAB_FRAGMENT = /* glsl */ `
+const GOD_RAYS_FRAGMENT = /* glsl */ `
   uniform float uTime;
-  uniform float uOpacity;
+  uniform vec3 uColor;
+  uniform float uBaseOpacity;
   varying vec2 vUv;
-  varying float vShade;
-  varying float vInfluence;
-
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
-  float noise(vec2 x) {
-    vec2 i = floor(x);
-    vec2 f = fract(x);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(
-      mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
-      mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
-      f.y);
-  }
-  float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < 4; i++) {
-      v += a * noise(p);
-      p *= 2.1;
-      a *= 0.5;
-    }
-    return v;
-  }
 
   void main() {
-    float across = abs(vUv.x - 0.5) * 2.0; // 0 center → 1 edge
+    // vUv.y: 0.0 at top (moon apex) -> 1.0 at bottom
+    // vUv.x: 0.0 left -> 1.0 right across ray beam
+    float beamAcross = abs(vUv.x - 0.5) * 2.0;
+    float beamProfile = exp(-beamAcross * beamAcross * 4.0);
 
-    float sheet  = fbm(vec2(vUv.x * 9.0,  vUv.y * 2.0  - uTime * 0.03));
-    float weave  = fbm(vec2(vUv.x * 22.0, vUv.y * 3.4  - uTime * 0.045));
-    float thread = noise(vec2(vUv.x * 55.0, vUv.y * 5.0 - uTime * 0.02));
-    float body   = 0.34 + 0.36 * sheet + 0.22 * weave + 0.16 * thread;
+    // Exponential vertical falloff from source down
+    float vertFalloff = exp(-vUv.y * 2.2);
 
-    float rough  = fbm(vec2(vUv.y * 3.5 - uTime * 0.04, vUv.x * 2.0)) * 0.35;
-    float edge   = 1.0 - smoothstep(0.40, 1.0, across + rough);
+    // Slow organic breathing animation (period 8-12 seconds)
+    float breathe = 0.85 + 0.15 * sin(uTime * 0.65 + vUv.x * 3.0);
 
-    float tipFade  = smoothstep(0.0, 0.20, vUv.y);
-    float nearMoon = 0.40 + 0.60 * pow(vUv.y, 0.8);
-
-    float shade = 0.80 + 0.35 * vShade;
-
-    float alpha = edge * tipFade * nearMoon * body * shade * uOpacity;
-    alpha += vInfluence * 0.14 * edge;
-    alpha = clamp(alpha, 0.0, 0.92);
-
-    vec3 deep  = vec3(0.46, 0.59, 0.93);
-    vec3 light = vec3(0.91, 0.95, 1.0);
-    vec3 col   = mix(deep, light, clamp(vUv.y * 0.55 + shade * 0.28 + sheet * 0.25, 0.0, 1.0));
-    col += vInfluence * vec3(0.10, 0.14, 0.25);
-
-    gl_FragColor = vec4(col, alpha);
+    float alpha = beamProfile * vertFalloff * uBaseOpacity * breathe;
+    gl_FragColor = vec4(uColor * alpha, alpha);
   }
 `
 
-/* Crown cap — a hemisphere of cloth draped over the top of the moon */
-const CROWN_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  uniform float uOpacity;
-  varying vec2 vUv;
-  varying float vShade;
-  varying float vInfluence;
-
-  float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-  float noise(vec2 x) {
-    vec2 i = floor(x); vec2 f = fract(x);
-    f = f*f*(3.0-2.0*f);
-    return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
-  }
-  float fbm(vec2 p) {
-    float v=0.0; float a=0.5;
-    for(int i=0;i<4;i++){v+=a*noise(p);p*=2.1;a*=0.5;}
-    return v;
-  }
-
-  void main() {
-    float d = length(vUv - 0.5) * 2.0;
-    if (d > 1.0) discard;
-
-    float sheet = fbm(vec2(vUv.x * 8.0, vUv.y * 8.0 - uTime * 0.025));
-    float weave = fbm(vec2(vUv.x * 20.0, vUv.y * 20.0 - uTime * 0.04));
-    float body  = 0.40 + 0.35 * sheet + 0.20 * weave;
-
-    // Softer at the very edge of the cap
-    float rim   = 1.0 - smoothstep(0.72, 1.0, d);
-    float alpha = rim * body * uOpacity;
-    alpha = clamp(alpha, 0.0, 0.85);
-
-    vec3 col = mix(vec3(0.88,0.92,1.0), vec3(0.98,0.99,1.0), body);
-    gl_FragColor = vec4(col, alpha);
-  }
-`
-
-/* ------------------------------------------------------------------ */
-/*  Crown cap mesh — a flat disc that is curved/displaced in the vert  */
-/* ------------------------------------------------------------------ */
-function CrownCap({
-  moonPos,
-  moonRadius,
-  mouse: _mouse,
-}: {
-  moonPos: [number, number, number]
-  moonRadius: number
-  mouse: MouseState
-}) {
-  // Two shader materials: one custom vert (shared), one custom frag
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: HIJAB_VERTEX,
-        fragmentShader: CROWN_FRAGMENT,
-        uniforms: {
-          uTime: { value: 0 },
-          uMouse: { value: new THREE.Vector2(0, -10) },
-          uMouseStrength: { value: 0 },
-          uPhase: { value: 1.2 },
-          uDriftAmp: { value: 0.0 },
-          uDriftFreq: { value: 0.0 },
-          uSpeed: { value: 0.15 },
-          uOpacity: { value: 0.82 },
-          uMode: { value: 1 },
-        },
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
+function GodRays({ moonPos }: { moonPos: [number, number, number] }) {
+  // 5 thin radial light shafts spreading across downward 60 degree cone
+  const rays = useMemo(
+    () => [
+      { angle: -0.38, width: 0.75, length: 6.8, opacity: 0.08, zOffset: -0.15 },
+      { angle: -0.18, width: 0.95, length: 7.2, opacity: 0.11, zOffset: -0.08 },
+      { angle:  0.02, width: 1.10, length: 7.6, opacity: 0.13, zOffset:  0.02 },
+      { angle:  0.20, width: 0.90, length: 7.0, opacity: 0.10, zOffset: -0.10 },
+      { angle:  0.36, width: 0.70, length: 6.5, opacity: 0.07, zOffset: -0.18 },
+    ],
     [],
   )
 
+  const materials = useMemo(
+    () =>
+      rays.map(
+        (r) =>
+          new THREE.ShaderMaterial({
+            vertexShader: GOD_RAYS_VERTEX,
+            fragmentShader: GOD_RAYS_FRAGMENT,
+            uniforms: {
+              uTime: { value: 0 },
+              uColor: { value: new THREE.Color('#c8dcff') }, // Pale icy blue, slightly warm
+              uBaseOpacity: { value: r.opacity },
+            },
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          }),
+      ),
+    [rays],
+  )
+
   useFrame((state) => {
-    material.uniforms.uTime.value = state.clock.elapsedTime
+    const t = state.clock.elapsedTime
+    for (const mat of materials) {
+      mat.uniforms.uTime.value = t
+    }
   })
 
-  // Place cap centred on top of the moon, tilted slightly forward
-  const r = moonRadius
   return (
-    <mesh
-      position={[moonPos[0], moonPos[1] + r * 0.08, moonPos[2] + r * 0.05]}
-      rotation={[Math.PI * 0.08, 0, 0]}
-      material={material}
-      renderOrder={15}
-    >
-      {/* Disc geometry: radius slightly larger than moon so it drapes over the limb */}
-      <circleGeometry args={[r * 1.18, 64]} />
-    </mesh>
+    <group position={[moonPos[0], moonPos[1], moonPos[2]]}>
+      {rays.map((r, i) => (
+        <mesh
+          key={i}
+          position={[0, -r.length / 2, r.zOffset]}
+          rotation={[0, 0, r.angle]}
+          material={materials[i]}
+          renderOrder={1}
+        >
+          <planeGeometry args={[r.width, r.length, 1, 16]} />
+        </mesh>
+      ))}
+    </group>
   )
 }
 
 /* ------------------------------------------------------------------ */
-/*  Veil ribbons                                                       */
+/*  STEPS 1, 3, 4, 5, 6, 8, 9, 10: Volumetric Light Scattering Veil   */
 /* ------------------------------------------------------------------ */
-type RibbonCfg = {
-  x: number
-  width: number
-  length: number
-  zOff: number
-  phase: number
-  driftAmp: number
-  driftFreq: number
-  speed: number
-  opacity: number
-  rot: number
-  attachYOffset: number // how high above the moon equator the ribbon starts
-}
+const PARTICLES_VERTEX = /* glsl */ `
+  attribute float aLayer;       // 0=far, 0.5=mid, 1=near (Step 6)
+  attribute float aIsSparkle;   // 1=sparkle star, 0=soft dust (Step 10)
+  attribute float aLifetime;
+  attribute float aStartTime;
+  attribute float aDriftSpeed;
+  attribute float aSwayAmp;
+  attribute float aSwayFreq;
+  attribute float aPhase;
+  attribute float aSize;
 
-/**
- * Back ribbons now start from the UPPER limb of the moon
- * (attachYOffset > 0 means we attach higher than the moon centre)
- */
-const BACK_RIBBONS: RibbonCfg[] = [
-  { x: -0.72, width: 0.60, length: 4.9, zOff: -0.38, phase: 0.9,  driftAmp: 0.50, driftFreq: 0.58, speed: 0.31, opacity: 0.44, rot:  0.10, attachYOffset:  0.55 },
-  { x: -0.52, width: 0.85, length: 5.4, zOff: -0.30, phase: 0.0,  driftAmp: 0.55, driftFreq: 0.55, speed: 0.30, opacity: 0.55, rot:  0.07, attachYOffset:  0.70 },
-  { x: -0.30, width: 0.70, length: 6.4, zOff: -0.44, phase: 3.9,  driftAmp: 0.78, driftFreq: 0.44, speed: 0.23, opacity: 0.48, rot:  0.03, attachYOffset:  0.80 },
-  { x: -0.12, width: 1.15, length: 6.2, zOff: -0.22, phase: 1.7,  driftAmp: 0.70, driftFreq: 0.48, speed: 0.24, opacity: 0.66, rot:  0.01, attachYOffset:  0.85 },
-  { x:  0.06, width: 0.60, length: 7.1, zOff: -0.42, phase: 5.6,  driftAmp: 0.92, driftFreq: 0.38, speed: 0.21, opacity: 0.50, rot:  0.05, attachYOffset:  0.85 },
-  { x:  0.20, width: 0.90, length: 5.9, zOff: -0.34, phase: 2.6,  driftAmp: 0.66, driftFreq: 0.50, speed: 0.26, opacity: 0.55, rot: -0.02, attachYOffset:  0.80 },
-  { x:  0.38, width: 0.75, length: 6.8, zOff: -0.40, phase: 4.8,  driftAmp: 0.85, driftFreq: 0.41, speed: 0.22, opacity: 0.50, rot: -0.04, attachYOffset:  0.70 },
-  { x:  0.56, width: 0.95, length: 6.7, zOff: -0.26, phase: 3.1,  driftAmp: 0.82, driftFreq: 0.42, speed: 0.27, opacity: 0.62, rot: -0.06, attachYOffset:  0.55 },
-  { x:  0.74, width: 0.62, length: 5.0, zOff: -0.36, phase: 5.1,  driftAmp: 0.55, driftFreq: 0.57, speed: 0.32, opacity: 0.44, rot: -0.12, attachYOffset:  0.40 },
-]
+  uniform float uTime;
+  uniform vec2 uMouse;
+  uniform float uMouseStrength;
+  uniform vec3 uMoonPos;
 
-/** One translucent drape over the moon's front lower limb. */
-const FRONT_RIBBON: RibbonCfg = {
-  x: -0.10, width: 0.90, length: 3.4, zOff: 0.38,
-  phase: 2.4, driftAmp: 0.34, driftFreq: 0.66, speed: 0.30, opacity: 0.34, rot: 0.02,
-  attachYOffset: 0.15,
-}
+  varying float vLayer;
+  varying float vIsSparkle;
+  varying float vDistFromMoon;
+  varying float vLifeAlpha;
+  varying vec3 vWorldPos;
 
-function Ribbon({
-  mouse,
-  cfg,
-  renderOrder,
+  void main() {
+    vLayer = aLayer;
+    vIsSparkle = aIsSparkle;
+
+    // Looping lifecycle [0.0, 1.0]
+    float age = mod(uTime + aStartTime, aLifetime);
+    float progress = age / aLifetime;
+
+    // Smooth sinusoidal birth and fade-out over lifetime
+    vLifeAlpha = smoothstep(0.0, 0.16, progress) * smoothstep(1.0, 0.82, progress);
+
+    // Downward drift within cone volume
+    float totalHeight = 7.0;
+    vec3 p = position;
+    p.y -= progress * aDriftSpeed * totalHeight * 0.55;
+    if (p.y < (uMoonPos.y - totalHeight)) {
+      p.y += totalHeight;
+    }
+
+    // Gentle horizontal sway (Step 1)
+    float sway = sin(uTime * aSwayFreq + aPhase) * aSwayAmp;
+    p.x += sway;
+    p.z += cos(uTime * aSwayFreq * 0.85 + aPhase) * (aSwayAmp * 0.5);
+
+    // Interactive mouse dispersion (soft organic push)
+    vec2 toMouse = p.xy - uMouse;
+    float mouseDistSq = dot(toMouse, toMouse);
+    float mouseInfluence = exp(-mouseDistSq * 0.32) * uMouseStrength;
+    p.xy += normalize(toMouse + vec2(0.0001)) * mouseInfluence * 0.35;
+
+    vWorldPos = (modelMatrix * vec4(p, 1.0)).xyz;
+    vDistFromMoon = length(vWorldPos.xy - uMoonPos.xy);
+
+    vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+
+    // Point size with screen perspective attenuation
+    float pointSize = aSize;
+    if (aIsSparkle > 0.5) {
+      pointSize = aSize * 0.65; // Sparkles are tiny, delicate points (1-3px feel)
+    }
+    gl_PointSize = pointSize * (360.0 / -mvPosition.z);
+    gl_PointSize = clamp(gl_PointSize, 1.5, 42.0);
+  }
+`
+
+const PARTICLES_FRAGMENT = /* glsl */ `
+  uniform float uTime;
+  uniform vec3 uMoonPos;
+  uniform float uFalloffScale;
+
+  varying float vLayer;
+  varying float vIsSparkle;
+  varying float vDistFromMoon;
+  varying float vLifeAlpha;
+  varying vec3 vWorldPos;
+
+  // Procedural 3D Simplex-style value noise (Step 4)
+  float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+
+  float noise3D(vec3 x) {
+    vec3 p = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(
+        mix(hash(p + vec3(0,0,0)), hash(p + vec3(1,0,0)), f.x),
+        mix(hash(p + vec3(0,1,0)), hash(p + vec3(1,1,0)), f.x),
+        f.y),
+      mix(
+        mix(hash(p + vec3(0,0,1)), hash(p + vec3(1,0,1)), f.x),
+        mix(hash(p + vec3(0,1,1)), hash(p + vec3(1,1,1)), f.x),
+        f.y),
+      f.z);
+  }
+
+  void main() {
+    vec2 coord = gl_PointCoord - vec2(0.5);
+    float dist = length(coord) * 2.0;
+    if (dist > 1.0) discard;
+
+    float spriteAlpha = 0.0;
+    vec3 particleTint = vec3(1.0);
+
+    if (vIsSparkle > 0.5) {
+      // STEP 10: Micro-stars / sparkles (4-point cross sprite + fast twinkle)
+      vec2 p = abs(coord) * 2.0;
+      float crossGlow = max(
+        exp(-p.x * 14.0) * exp(-p.y * 2.2),
+        exp(-p.y * 14.0) * exp(-p.x * 2.2)
+      );
+      crossGlow += exp(-length(p) * 6.5) * 0.9;
+      float twinkle = pow(sin(uTime * 6.0 + vWorldPos.x * 12.0 + vWorldPos.y * 9.0) * 0.5 + 0.5, 3.0);
+      spriteAlpha = crossGlow * (0.35 + 0.65 * twinkle);
+      particleTint = vec3(1.0, 1.0, 1.0);
+    } else {
+      // STEP 1: Soft Gaussian radial-gradient sprite (white core fading to transparent edge)
+      spriteAlpha = exp(-dist * dist * 3.8) * smoothstep(1.0, 0.15, dist);
+    }
+
+    // STEP 3: Exponential opacity falloff with distance from moon center
+    // falloffScale ~ 1.8 units (so opacity drops to ~5% at 3x moon radius)
+    float expFalloff = exp(-vDistFromMoon / uFalloffScale);
+
+    // STEP 4: Procedural soft 3D noise on veil opacity (kills banding)
+    vec3 noisePos = vWorldPos * 0.8 + vec3(0.0, uTime * 0.05, 0.0);
+    float n = noise3D(noisePos);
+    float noiseMod = 0.70 + 0.30 * n;
+
+    // STEP 6: Depth layer opacity modulation (far: 0.35x, mid: 0.68x, near: 1.0x)
+    float layerOpacity = mix(0.35, 1.0, vLayer);
+
+    // STEP 5: Feathered edge mask (smooth fade near viewport edges)
+    vec2 ndcApprox = vWorldPos.xy / vec2(3.8, 4.6);
+    float edgeX = smoothstep(1.0, 0.72, abs(ndcApprox.x));
+    float edgeY = smoothstep(1.0, 0.68, abs(ndcApprox.y));
+    float edgeFeather = edgeX * edgeY;
+
+    float finalAlpha = spriteAlpha * expFalloff * noiseMod * layerOpacity * vLifeAlpha * edgeFeather;
+
+    // STEP 9: Color grade (cool icy blue near moon, slightly warm dust far away)
+    float dNorm = vDistFromMoon / 1.0;
+    vec3 coolCore  = vec3(0.72, 0.83, 1.0); // #b8d4ff to #d8e8ff
+    vec3 midMoon   = vec3(0.85, 0.91, 1.0);
+    vec3 warmDust  = vec3(0.91, 0.85, 0.78); // #e8d8c8
+    vec3 outerGray = vec3(0.80, 0.80, 0.82); // #cccccc
+
+    vec3 baseColor;
+    if (dNorm < 1.5) {
+      baseColor = mix(coolCore, midMoon, dNorm / 1.5);
+    } else if (dNorm < 2.5) {
+      baseColor = mix(midMoon, warmDust, (dNorm - 1.5) / 1.0);
+    } else {
+      baseColor = mix(warmDust, outerGray, clamp((dNorm - 2.5) / 1.5, 0.0, 1.0));
+    }
+
+    // STEP 8: Subtle Chromatic Aberration at outer veil edges
+    if (dNorm > 1.2) {
+      float chroma = clamp((dNorm - 1.2) * 0.25, 0.0, 0.35);
+      baseColor.r *= (1.0 + chroma * 0.22);
+      baseColor.b *= (1.0 - chroma * 0.18);
+    }
+
+    vec3 finalRgb = baseColor * particleTint;
+    gl_FragColor = vec4(finalRgb * finalAlpha, finalAlpha);
+  }
+`
+
+function VolumetricVeilParticles({
   moonPos,
-  moonRadius,
+  mouse,
 }: {
-  mouse: MouseState
-  cfg: RibbonCfg
-  renderOrder: number
   moonPos: [number, number, number]
-  moonRadius: number
+  mouse: MouseState
 }) {
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: HIJAB_VERTEX,
-        fragmentShader: HIJAB_FRAGMENT,
-        uniforms: {
-          uTime: { value: 0 },
-          uMouse: { value: new THREE.Vector2(0, -10) },
-          uMouseStrength: { value: 0 },
-          uPhase: { value: cfg.phase },
-          uDriftAmp: { value: cfg.driftAmp },
-          uDriftFreq: { value: cfg.driftFreq },
-          uSpeed: { value: cfg.speed },
-          uOpacity: { value: cfg.opacity },
-          uMode: { value: 0 },
-        },
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    [cfg],
-  )
+  const PARTICLE_COUNT = 3600
+
+  const { geometry, material } = useMemo(() => {
+    const geo = new THREE.BufferGeometry()
+
+    const positions = new Float32Array(PARTICLE_COUNT * 3)
+    const layers = new Float32Array(PARTICLE_COUNT)
+    const isSparkle = new Float32Array(PARTICLE_COUNT)
+    const lifetimes = new Float32Array(PARTICLE_COUNT)
+    const startTimes = new Float32Array(PARTICLE_COUNT)
+    const driftSpeeds = new Float32Array(PARTICLE_COUNT)
+    const swayAmps = new Float32Array(PARTICLE_COUNT)
+    const swayFreqs = new Float32Array(PARTICLE_COUNT)
+    const phases = new Float32Array(PARTICLE_COUNT)
+    const sizes = new Float32Array(PARTICLE_COUNT)
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      // Cone spawn volume: apex at moon, pointing down, half-angle ~25 deg
+      // Distribute height with continuous concentration near lunar source
+      const hNorm = Math.pow(Math.random(), 0.85)
+      const h = 0.4 + hNorm * 6.6
+      const maxR = h * Math.tan((25 * Math.PI) / 180)
+      const r = maxR * Math.sqrt(Math.random())
+      const theta = Math.random() * Math.PI * 2
+
+      const x = moonPos[0] + r * Math.cos(theta)
+      const y = moonPos[1] - h
+      // Flattened in Z for layered depth
+      const z = moonPos[2] + r * Math.sin(theta) * 0.65
+
+      positions[i * 3 + 0] = x
+      positions[i * 3 + 1] = y
+      positions[i * 3 + 2] = z
+
+      // STEP 6: Depth layers (far, mid, near)
+      let layer = 0.5 // mid
+      if (z < moonPos[2] - 0.25) {
+        layer = 0.0 // far
+      } else if (z > moonPos[2] + 0.25) {
+        layer = 1.0 // near
+      }
+      layers[i] = layer
+
+      // STEP 10: 5% micro-stars / sparkles
+      const sparkle = Math.random() < 0.05 ? 1.0 : 0.0
+      isSparkle[i] = sparkle
+
+      // Lifetimes: 4-8 seconds
+      lifetimes[i] = 4.5 + Math.random() * 3.5
+      startTimes[i] = Math.random() * 8.0
+
+      // Layered drift speed and sizing
+      const layerSpeedMod = layer === 0.0 ? 0.6 : layer === 1.0 ? 1.2 : 0.9
+      driftSpeeds[i] = (0.45 + Math.random() * 0.45) * layerSpeedMod
+
+      swayAmps[i] = 0.08 + Math.random() * 0.14
+      swayFreqs[i] = 0.4 + Math.random() * 0.5
+      phases[i] = Math.random() * Math.PI * 2
+
+      // Sizing: 4-12px, varied by layer
+      const layerSizeMod = layer === 0.0 ? 0.6 : layer === 1.0 ? 1.25 : 0.9
+      sizes[i] = (5.0 + Math.random() * 6.0) * layerSizeMod
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setAttribute('aLayer', new THREE.BufferAttribute(layers, 1))
+    geo.setAttribute('aIsSparkle', new THREE.BufferAttribute(isSparkle, 1))
+    geo.setAttribute('aLifetime', new THREE.BufferAttribute(lifetimes, 1))
+    geo.setAttribute('aStartTime', new THREE.BufferAttribute(startTimes, 1))
+    geo.setAttribute('aDriftSpeed', new THREE.BufferAttribute(driftSpeeds, 1))
+    geo.setAttribute('aSwayAmp', new THREE.BufferAttribute(swayAmps, 1))
+    geo.setAttribute('aSwayFreq', new THREE.BufferAttribute(swayFreqs, 1))
+    geo.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1))
+    geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
+
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: PARTICLES_VERTEX,
+      fragmentShader: PARTICLES_FRAGMENT,
+      uniforms: {
+        uTime: { value: 0 },
+        uMouse: { value: new THREE.Vector2(0, -10) },
+        uMouseStrength: { value: 0 },
+        uMoonPos: { value: new THREE.Vector3(...moonPos) },
+        uFalloffScale: { value: 1.85 },
+      },
+      transparent: true,
+      blending: THREE.AdditiveBlending, // STEP 1: Additive blending for pure luminous light
+      depthWrite: false,
+    })
+
+    return { geometry: geo, material: mat }
+  }, [moonPos])
 
   useFrame((state, delta) => {
     material.uniforms.uTime.value = state.clock.elapsedTime
@@ -505,31 +595,12 @@ function Ribbon({
     material.uniforms.uMouseStrength.value = mouse.strength
   })
 
-  // Ribbon top-edge attaches at attachYOffset above the moon centre
-  const attachY = moonPos[1] + cfg.attachYOffset * moonRadius
-  return (
-    <mesh
-      position={[
-        moonPos[0] + cfg.x,
-        attachY - cfg.length / 2,
-        moonPos[2] + cfg.zOff,
-      ]}
-      rotation={[0, 0, cfg.rot]}
-      material={material}
-      renderOrder={renderOrder}
-    >
-      <planeGeometry args={[cfg.width, cfg.length, 20, 150]} />
-    </mesh>
-  )
+  return <points geometry={geometry} material={material} renderOrder={10} />
 }
 
 /* ------------------------------------------------------------------ */
 /*  Scene graph                                                        */
 /* ------------------------------------------------------------------ */
-const MOON_POS: [number, number, number] = [0.15, 1.18, -0.8]
-const MOON_RADIUS = 1.0
-
-/** Subtle camera drift: the whole scene breathes very slowly. */
 function CameraDrift() {
   useFrame((state) => {
     const t = state.clock.elapsedTime
@@ -544,26 +615,37 @@ function SceneContent({ mouse }: { mouse: MouseState }) {
   return (
     <>
       <CameraDrift />
-      {/* Glow layers */}
-      <Halo position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.30]} size={2.6} intensity={0.75} color="#a8c4ff" />
-      <Halo position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.55]} size={4.8} intensity={0.28} color="#7fa0e8" />
-      <Halo position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.85]} size={8.0} intensity={0.10} color="#4a6ab8" />
 
-      {/* Dense silk veils (behind) */}
-      {BACK_RIBBONS.map((cfg, i) => (
-        <Ribbon key={i} mouse={mouse} cfg={cfg} renderOrder={2 + i} moonPos={MOON_POS} moonRadius={MOON_RADIUS} />
-      ))}
+      {/* Atmospheric photographic corona halos behind the lunar disc */}
+      <Halo
+        position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.30]}
+        size={2.7}
+        intensity={0.65}
+        color="#a8c4ff"
+      />
+      <Halo
+        position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.55]}
+        size={4.8}
+        intensity={0.25}
+        color="#7fa0e8"
+      />
+      <Halo
+        position={[MOON_POS[0], MOON_POS[1], MOON_POS[2] - 0.85]}
+        size={8.0}
+        intensity={0.08}
+        color="#4a6ab8"
+      />
 
-      {/* The moon itself */}
+      {/* STEP 7: Breathing God-rays radiating downward */}
+      <GodRays moonPos={MOON_POS} />
+
+      {/* The full moon with 3D curvature fresnel rim glow */}
       <Suspense fallback={null}>
-        <TexturedMoon radius={MOON_RADIUS} position={MOON_POS} renderOrder={1} />
+        <TexturedMoon radius={MOON_RADIUS} position={MOON_POS} renderOrder={2} />
       </Suspense>
 
-      {/* Crown cap (hijab top, sits over the moon like a real headscarf) */}
-      <CrownCap moonPos={MOON_POS} moonRadius={MOON_RADIUS} mouse={mouse} />
-
-      {/* Front translucent drape */}
-      <Ribbon mouse={mouse} cfg={FRONT_RIBBON} renderOrder={20} moonPos={MOON_POS} moonRadius={MOON_RADIUS} />
+      {/* STEPS 1-10: Realistic volumetric light scattering & cosmic dust veil */}
+      <VolumetricVeilParticles moonPos={MOON_POS} mouse={mouse} />
     </>
   )
 }
