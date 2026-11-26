@@ -38,7 +38,7 @@ import FilmFinish from '../components/FilmFinish'
 
 const WOMAN_PATH = './models/woman/woman.glb'
 const LOTUS_PATH = './models/lotus/lotus.glb'
-const WOMAN_SCALE = 1.15 // ~40% of frame height (was 1.8)
+const WOMAN_SCALE = 1.35 // ~44% of frame height (1.8 → 1.15 was a touch too small)
 const LOTUS_SCALE = 1.0
 const PETAL_COUNT = 6000
 
@@ -124,12 +124,15 @@ function Lights({ progress }: { progress: MotionValue<number> }) {
   const forestFill = useRef<THREE.DirectionalLight>(null!)
   const moonKey = useRef<THREE.DirectionalLight>(null!)
   const lakeFill = useRef<THREE.DirectionalLight>(null!)
+  const womanKey = useRef<THREE.DirectionalLight>(null!)
   useFrame(() => {
-    const { forest, lake } = weights(progress.get())
+    const { forest, lake, bloom } = weights(progress.get())
     forestBack.current.intensity = 1.6 * forest
     forestFill.current.intensity = 0.55 * forest
     moonKey.current.intensity = 1.5 * lake
     lakeFill.current.intensity = 0.7 * lake
+    // Her key light lives while she does, then hands the stage to the lotus
+    womanKey.current.intensity = 1.15 * (1 - smooth(bloom, 0.42, 0.58))
   })
   return (
     <>
@@ -140,6 +143,8 @@ function Lights({ progress }: { progress: MotionValue<number> }) {
       {/* lake: the moon, upper right, and a soft front fill */}
       <directionalLight ref={moonKey} position={[9, 8, -40]} color="#dfe8ff" />
       <directionalLight ref={lakeFill} position={[-2, 4, 6]} color="#b4c4e6" />
+      {/* her key: soft moonlight from the viewer's upper left, on the side we see */}
+      <directionalLight ref={womanKey} position={[-2.5, 5, 6]} color="#e8efff" />
     </>
   )
 }
@@ -667,23 +672,43 @@ function FallenPetals({ progress }: { progress: MotionValue<number> }) {
   )
 }
 
-/** A soft light breathing around the bloomed lotus (and mirrored by the water). */
-function LotusAura({ progress }: { progress: MotionValue<number> }) {
+/**
+ * A soft light breathing behind a figure (and mirrored by the water).
+ * Behind her it lifts the silhouette off the dark; around the lotus it glows warm.
+ */
+function Aura({
+  progress,
+  show,
+  position,
+  size,
+  warm,
+  strength,
+}: {
+  progress: MotionValue<number>
+  show: (p: number) => number
+  position: [number, number, number]
+  size: [number, number]
+  warm: number
+  strength: number
+}) {
   const time = useTime()
   const material = useMemo(
     () =>
       new THREE.ShaderMaterial({
-        uniforms: { uShow: { value: 0 }, uTime: { value: 0 } },
+        uniforms: { uShow: { value: 0 }, uTime: { value: 0 }, uWarm: { value: warm }, uStrength: { value: strength } },
         vertexShader: QUAD_VERTEX,
         fragmentShader: /* glsl */ `
           uniform float uShow;
           uniform float uTime;
+          uniform float uWarm;
+          uniform float uStrength;
           varying vec2 vUv;
           void main() {
-            vec2 c = (vUv - vec2(0.5, 0.42)) * vec2(1.0, 1.35);
+            vec2 c = (vUv - vec2(0.5, 0.45)) * vec2(1.0, 1.2);
             float d = length(c) * 2.0;
-            float a = pow(max(0.0, 1.0 - d), 2.6) * (0.85 + 0.15 * sin(uTime * 0.5)) * 0.26 * uShow;
-            vec3 col = mix(vec3(1.0, 0.93, 0.82), vec3(0.82, 0.88, 1.0), smoothstep(0.0, 0.8, d));
+            float a = pow(max(0.0, 1.0 - d), 2.6) * (0.85 + 0.15 * sin(uTime * 0.5)) * uStrength * uShow;
+            vec3 core = mix(vec3(0.86, 0.91, 1.0), vec3(1.0, 0.93, 0.82), uWarm);
+            vec3 col = mix(core, vec3(0.82, 0.88, 1.0), smoothstep(0.0, 0.8, d));
             gl_FragColor = vec4(col * a, a);
           }
         `,
@@ -692,20 +717,24 @@ function LotusAura({ progress }: { progress: MotionValue<number> }) {
         blending: THREE.AdditiveBlending,
         fog: false,
       }),
-    [],
+    [warm, strength],
   )
   useFrame((state) => {
-    material.uniforms.uShow.value = smooth(weights(progress.get()).bloom, 0.66, 0.86)
+    material.uniforms.uShow.value = show(progress.get())
     material.uniforms.uTime.value = time(state.clock)
   })
   return (
-    <mesh position={[0, 0.55, -0.4]} material={material} renderOrder={4}>
-      <planeGeometry args={[4.2, 3.2]} />
+    <mesh position={position} material={material} renderOrder={4}>
+      <planeGeometry args={size} />
     </mesh>
   )
 }
 
-function LightMotes({ progress, count = 140 }: { progress: MotionValue<number>; count?: number }) {
+// Behind her from the first frame until she dissolves; warm around the lotus once bloomed
+const womanAuraShow = (p: number) => 1 - smooth(weights(p).bloom, 0.32, 0.52)
+const lotusAuraShow = (p: number) => smooth(weights(p).bloom, 0.66, 0.86)
+
+function LightMotes({ progress, count = 220 }: { progress: MotionValue<number>; count?: number }) {
   const time = useTime()
   const points = useMemo(() => {
     const rand = mulberry32(33)
@@ -760,7 +789,8 @@ function LightMotes({ progress, count = 140 }: { progress: MotionValue<number>; 
   useFrame((state) => {
     const m = points.material as THREE.ShaderMaterial
     m.uniforms.uTime.value = time(state.clock)
-    m.uniforms.uShow.value = smooth(weights(progress.get()).bloom, 0.78, 0.95)
+    // The magic begins the moment the lake appears around her, and stays
+    m.uniforms.uShow.value = smooth(progress.get(), 0.2, 0.32)
   })
   return <primitive object={points} />
 }
@@ -1027,7 +1057,8 @@ function JourneyScene({ progress, armed }: { progress: MotionValue<number>; arme
         </Suspense>
       )}
 
-      <LotusAura progress={progress} />
+      <Aura progress={progress} show={womanAuraShow} position={[0, 1.35, -1.1]} size={[3.4, 4.6]} warm={0} strength={0.22} />
+      <Aura progress={progress} show={lotusAuraShow} position={[0, 0.55, -0.4]} size={[4.2, 3.2]} warm={1} strength={0.26} />
       <FallenPetals progress={progress} />
       <LightMotes progress={progress} />
       <StarSnow progress={progress} />

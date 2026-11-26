@@ -121,14 +121,18 @@ export function prepareWoman(
           '#include <map_fragment>',
           /* glsl */ `#include <map_fragment>
           float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-          vec3 pale = vec3(0.90, 0.93, 1.0) * (0.45 + 0.7 * lum);
-          diffuseColor.rgb = mix(diffuseColor.rgb, pale, 0.6);`,
+          // near-white silk: a high floor keeps her luminous, the luminance term
+          // keeps the petal and hair detail of the baked texture
+          vec3 pale = vec3(0.95, 0.97, 1.0) * (0.62 + 0.5 * lum);
+          diffuseColor.rgb = mix(diffuseColor.rgb, pale, 0.84);`,
         )
         .replace(
           '#include <emissivemap_fragment>',
           /* glsl */ `#include <emissivemap_fragment>
           float rim = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.4);
-          totalEmissiveRadiance += vec3(0.72, 0.82, 1.0) * rim * 0.55;
+          totalEmissiveRadiance += vec3(0.72, 0.82, 1.0) * rim * 0.8;
+          // a quiet inner light, so the white dress and hair glow like the reference
+          totalEmissiveRadiance += diffuseColor.rgb * 0.22;
           totalEmissiveRadiance += vec3(0.88, 0.92, 1.0) * dEdge * 2.2;`,
         )
     }
