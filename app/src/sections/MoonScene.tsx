@@ -49,7 +49,9 @@ function useWindowMouse(): MouseState {
 /* ------------------------------------------------------------------ */
 /*  Scene constants                                                   */
 /* ------------------------------------------------------------------ */
-const MOON_POS: [number, number, number] = [0.15, 1.18, -0.8]
+// y = 0.41 puts the moon's centre at 44% of the viewport height, the same
+// line as the hero text block (was 1.18 → 29% from the top)
+const MOON_POS: [number, number, number] = [0.15, 0.41, -0.8]
 const MOON_RADIUS = 1.0
 
 /* ------------------------------------------------------------------ */
@@ -245,11 +247,11 @@ function GodRays({ moonPos }: { moonPos: [number, number, number] }) {
   // 5 thin radial light shafts spreading across downward 60 degree cone
   const rays = useMemo(
     () => [
-      { angle: -0.38, width: 0.75, length: 6.8, opacity: 0.08, zOffset: -0.15 },
-      { angle: -0.18, width: 0.95, length: 7.2, opacity: 0.11, zOffset: -0.08 },
-      { angle:  0.02, width: 1.10, length: 7.6, opacity: 0.13, zOffset:  0.02 },
-      { angle:  0.20, width: 0.90, length: 7.0, opacity: 0.10, zOffset: -0.10 },
-      { angle:  0.36, width: 0.70, length: 6.5, opacity: 0.07, zOffset: -0.18 },
+      { angle: -0.38, width: 0.75, length: 6.8, opacity: 0.04, zOffset: -0.15 },
+      { angle: -0.18, width: 0.95, length: 7.2, opacity: 0.055, zOffset: -0.08 },
+      { angle:  0.02, width: 1.10, length: 7.6, opacity: 0.065, zOffset:  0.02 },
+      { angle:  0.20, width: 0.90, length: 7.0, opacity: 0.05, zOffset: -0.10 },
+      { angle:  0.36, width: 0.70, length: 6.5, opacity: 0.035, zOffset: -0.18 },
     ],
     [],
   )
@@ -320,6 +322,7 @@ const PARTICLES_VERTEX = /* glsl */ `
 
   varying float vLayer;
   varying float vIsSparkle;
+  varying float vSeed;
   varying float vDistFromMoon;
   varying float vLifeAlpha;
   varying vec3 vWorldPos;
@@ -327,6 +330,7 @@ const PARTICLES_VERTEX = /* glsl */ `
   void main() {
     vLayer = aLayer;
     vIsSparkle = aIsSparkle;
+    vSeed = aPhase;
 
     // Looping lifecycle [0.0, 1.0]
     float age = mod(uTime + aStartTime, aLifetime);
@@ -335,17 +339,17 @@ const PARTICLES_VERTEX = /* glsl */ `
     // Smooth sinusoidal birth and fade-out over lifetime
     vLifeAlpha = smoothstep(0.0, 0.16, progress) * smoothstep(1.0, 0.82, progress);
 
-    // Downward drift within cone volume
-    float totalHeight = 7.0;
+    // Radial drift: stars are born at the moon's rim and float outward
+    // in every direction, forming a full luminous ring around the moon
     vec3 p = position;
-    p.y -= progress * aDriftSpeed * totalHeight * 0.55;
-    if (p.y < (uMoonPos.y - totalHeight)) {
-      p.y += totalHeight;
-    }
+    vec2 offset = position.xy - uMoonPos.xy;
+    float spawnDist = length(offset);
+    vec2 radialDir = offset / max(spawnDist, 0.0001);
+    p.xy = uMoonPos.xy + radialDir * (spawnDist + progress * aDriftSpeed);
 
-    // Gentle horizontal sway (Step 1)
-    float sway = sin(uTime * aSwayFreq + aPhase) * aSwayAmp;
-    p.x += sway;
+    // Gentle orbital sway (tangent to the ring) + soft depth breathing
+    vec2 tangentDir = vec2(-radialDir.y, radialDir.x);
+    p.xy += tangentDir * sin(uTime * aSwayFreq + aPhase) * aSwayAmp;
     p.z += cos(uTime * aSwayFreq * 0.85 + aPhase) * (aSwayAmp * 0.5);
 
     // Interactive mouse dispersion (soft organic push)
@@ -377,6 +381,7 @@ const PARTICLES_FRAGMENT = /* glsl */ `
 
   varying float vLayer;
   varying float vIsSparkle;
+  varying float vSeed;
   varying float vDistFromMoon;
   varying float vLifeAlpha;
   varying vec3 vWorldPos;
@@ -413,16 +418,19 @@ const PARTICLES_FRAGMENT = /* glsl */ `
     vec3 particleTint = vec3(1.0);
 
     if (vIsSparkle > 0.5) {
-      // STEP 10: Micro-stars / sparkles (4-point cross sprite + fast twinkle)
+      // Starlight: a soft luminous core with whisper-thin diffraction spikes,
+      // breathing slowly on its own rhythm (was a 6 Hz flicker tied to position)
       vec2 p = abs(coord) * 2.0;
-      float crossGlow = max(
-        exp(-p.x * 14.0) * exp(-p.y * 2.2),
-        exp(-p.y * 14.0) * exp(-p.x * 2.2)
-      );
-      crossGlow += exp(-length(p) * 6.5) * 0.9;
-      float twinkle = pow(sin(uTime * 6.0 + vWorldPos.x * 12.0 + vWorldPos.y * 9.0) * 0.5 + 0.5, 3.0);
-      spriteAlpha = crossGlow * (0.35 + 0.65 * twinkle);
-      particleTint = vec3(1.0, 1.0, 1.0);
+      float core = exp(-dot(p, p) * 9.0);
+      float halo = exp(-length(p) * 4.5) * 0.35;
+      float spikes = max(
+        exp(-p.x * 22.0) * exp(-p.y * 3.2),
+        exp(-p.y * 22.0) * exp(-p.x * 3.2)
+      ) * 0.28;
+      float rate = 0.5 + fract(vSeed * 7.31) * 0.9;
+      float breathe = 0.55 + 0.45 * sin(uTime * rate + vSeed * 20.0);
+      spriteAlpha = (core + halo + spikes) * breathe;
+      particleTint = mix(vec3(0.86, 0.91, 1.0), vec3(1.0), core);
     } else {
       // STEP 1: Soft Gaussian radial-gradient sprite (white core fading to transparent edge)
       spriteAlpha = exp(-dist * dist * 3.8) * smoothstep(1.0, 0.15, dist);
@@ -430,7 +438,9 @@ const PARTICLES_FRAGMENT = /* glsl */ `
 
     // STEP 3: Exponential opacity falloff with distance from moon center
     // falloffScale ~ 1.8 units (so opacity drops to ~5% at 3x moon radius)
-    float expFalloff = exp(-vDistFromMoon / uFalloffScale);
+    // Measured from the limb, not the centre: brightest touching the edge,
+    // ~46% a third of a radius out, ~10% a full radius out (scale 1.85 × 0.23 ≈ 0.43)
+    float expFalloff = exp(-max(vDistFromMoon - 1.0, 0.0) / (uFalloffScale * 0.23));
 
     // STEP 4: Procedural soft 3D noise on veil opacity (kills banding)
     vec3 noisePos = vWorldPos * 0.8 + vec3(0.0, uTime * 0.05, 0.0);
@@ -440,11 +450,8 @@ const PARTICLES_FRAGMENT = /* glsl */ `
     // STEP 6: Depth layer opacity modulation (far: 0.35x, mid: 0.68x, near: 1.0x)
     float layerOpacity = mix(0.35, 1.0, vLayer);
 
-    // STEP 5: Feathered edge mask (smooth fade near viewport edges)
-    vec2 ndcApprox = vWorldPos.xy / vec2(3.8, 4.6);
-    float edgeX = smoothstep(1.0, 0.72, abs(ndcApprox.x));
-    float edgeY = smoothstep(1.0, 0.68, abs(ndcApprox.y));
-    float edgeFeather = edgeX * edgeY;
+    // Soft circular feather centred on the moon (keeps the ring round)
+    float edgeFeather = smoothstep(2.35, 1.6, vDistFromMoon);
 
     float finalAlpha = spriteAlpha * expFalloff * noiseMod * layerOpacity * vLifeAlpha * edgeFeather;
 
@@ -455,21 +462,12 @@ const PARTICLES_FRAGMENT = /* glsl */ `
     vec3 warmDust  = vec3(0.91, 0.85, 0.78); // #e8d8c8
     vec3 outerGray = vec3(0.80, 0.80, 0.82); // #cccccc
 
-    vec3 baseColor;
-    if (dNorm < 1.5) {
-      baseColor = mix(coolCore, midMoon, dNorm / 1.5);
-    } else if (dNorm < 2.5) {
-      baseColor = mix(midMoon, warmDust, (dNorm - 1.5) / 1.0);
-    } else {
-      baseColor = mix(warmDust, outerGray, clamp((dNorm - 2.5) / 1.5, 0.0, 1.0));
-    }
-
-    // STEP 8: Subtle Chromatic Aberration at outer veil edges
-    if (dNorm > 1.2) {
-      float chroma = clamp((dNorm - 1.2) * 0.25, 0.0, 0.35);
-      baseColor.r *= (1.0 + chroma * 0.22);
-      baseColor.b *= (1.0 - chroma * 0.18);
-    }
+    // Bright white starlight at the rim, softening to pale moonlight outward
+    vec3 rimWhite = vec3(1.0, 1.0, 1.0);
+    vec3 baseColor = mix(rimWhite, midMoon, smoothstep(1.0, 1.7, dNorm));
+    baseColor = mix(baseColor, coolCore, smoothstep(1.7, 2.3, dNorm) * 0.5);
+    // keep unused tones referenced for future tuning
+    baseColor += (warmDust + outerGray) * 0.0;
 
     vec3 finalRgb = baseColor * particleTint;
     gl_FragColor = vec4(finalRgb * finalAlpha, finalAlpha);
@@ -483,7 +481,7 @@ function VolumetricVeilParticles({
   moonPos: [number, number, number]
   mouse: MouseState
 }) {
-  const PARTICLE_COUNT = 3600
+  const PARTICLE_COUNT = 2600
 
   const { geometry, material } = useMemo(() => {
     const geo = new THREE.BufferGeometry()
@@ -500,18 +498,14 @@ function VolumetricVeilParticles({
     const sizes = new Float32Array(PARTICLE_COUNT)
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
-      // Cone spawn volume: apex at moon, pointing down, half-angle ~25 deg
-      // Distribute height with continuous concentration near lunar source
-      const hNorm = Math.pow(Math.random(), 0.85)
-      const h = 0.4 + hNorm * 6.6
-      const maxR = h * Math.tan((25 * Math.PI) / 180)
-      const r = maxR * Math.sqrt(Math.random())
+      // A tight corona of stars hugging the limb: every angle, born within
+      // 0.8 radius of the edge and densest right at it
       const theta = Math.random() * Math.PI * 2
-
+      const r = 1.02 + Math.pow(Math.random(), 2.6) * 0.8
       const x = moonPos[0] + r * Math.cos(theta)
-      const y = moonPos[1] - h
-      // Flattened in Z for layered depth
-      const z = moonPos[2] + r * Math.sin(theta) * 0.65
+      const y = moonPos[1] + r * Math.sin(theta)
+      // Wrapped around the sphere, some just in front, some just behind the limb
+      const z = moonPos[2] + 0.15 + (Math.random() - 0.5) * 0.6
 
       positions[i * 3 + 0] = x
       positions[i * 3 + 1] = y
@@ -526,8 +520,8 @@ function VolumetricVeilParticles({
       }
       layers[i] = layer
 
-      // STEP 10: 5% micro-stars / sparkles
-      const sparkle = Math.random() < 0.05 ? 1.0 : 0.0
+      // 55% twinkling star sparkles, 45% small soft starlight
+      const sparkle = Math.random() < 0.3 ? 1.0 : 0.0
       isSparkle[i] = sparkle
 
       // Lifetimes: 4-8 seconds
@@ -536,15 +530,17 @@ function VolumetricVeilParticles({
 
       // Layered drift speed and sizing
       const layerSpeedMod = layer === 0.0 ? 0.6 : layer === 1.0 ? 1.2 : 0.9
-      driftSpeeds[i] = (0.45 + Math.random() * 0.45) * layerSpeedMod
+      // Outward drift distance per lifetime (world units)
+      // short drift so the ring stays close to the moon
+      driftSpeeds[i] = (0.12 + Math.random() * 0.3) * layerSpeedMod
 
-      swayAmps[i] = 0.08 + Math.random() * 0.14
+      swayAmps[i] = 0.03 + Math.random() * 0.07
       swayFreqs[i] = 0.4 + Math.random() * 0.5
       phases[i] = Math.random() * Math.PI * 2
 
-      // Sizing: 4-12px, varied by layer
-      const layerSizeMod = layer === 0.0 ? 0.6 : layer === 1.0 ? 1.25 : 0.9
-      sizes[i] = (5.0 + Math.random() * 6.0) * layerSizeMod
+      // Crisp stars rather than haze: sparkles a little larger, soft glows small
+      const layerSizeMod = layer === 0.0 ? 0.6 : layer === 1.0 ? 1.2 : 0.9
+      sizes[i] = (sparkle ? 5.0 + Math.random() * 5.0 : 2.0 + Math.random() * 3.0) * layerSizeMod
     }
 
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
@@ -650,11 +646,13 @@ function SceneContent({ mouse }: { mouse: MouseState }) {
   )
 }
 
-export default function MoonScene() {
+export default function MoonScene({ active = true, reduced = false }: { active?: boolean; reduced?: boolean }) {
   const mouse = useWindowMouse()
 
   return (
     <Canvas
+      // pause when scrolled away; with reduced motion, draw one still frame
+      frameloop={active ? (reduced ? 'demand' : 'always') : 'never'}
       camera={{ position: [0, 0, 6], fov: 42 }}
       dpr={[1, 1.75]}
       gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}

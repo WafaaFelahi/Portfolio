@@ -1,5 +1,7 @@
-import { motion } from 'framer-motion'
+import { useRef } from 'react'
+import { motion, useInView, useReducedMotion } from 'framer-motion'
 import MoonScene from './MoonScene'
+import FilmFinish from '../components/FilmFinish'
 
 const container = {
   hidden: {},
@@ -19,10 +21,14 @@ const item = {
 }
 
 export default function Hero() {
+  const ref = useRef<HTMLElement>(null)
+  const inView = useInView(ref)
+  const reduced = useReducedMotion() ?? false
   return (
-    <section className="relative h-screen min-h-[640px] w-full overflow-hidden bg-[#020617]">
-      {/* ------------------------------------------------ LEFT · 45% */}
-      <div className="relative z-10 flex h-full w-full flex-col justify-center px-8 sm:px-14 lg:px-24 xl:px-32">
+    <section ref={ref} className="relative h-screen min-h-[640px] w-full overflow-hidden bg-[#020617]">
+      {/* ------------------------------------------------ LEFT · 45%
+          On phones the text sits low so the moon can live above it. */}
+      <div className="relative z-10 flex h-full w-full flex-col justify-end px-8 pb-28 sm:px-14 md:justify-center md:pb-[12vh] lg:px-24 xl:px-32">
         <motion.div
           variants={container}
           initial="hidden"
@@ -52,19 +58,20 @@ export default function Hero() {
 
           <motion.p
             variants={item}
-            className="mt-10 text-[11px] font-light uppercase tracking-[0.3em] text-slate-500 sm:text-xs"
+            className="mt-10 text-[11px] font-light uppercase tracking-[0.3em] text-slate-400 sm:text-xs"
           >
             Full-Stack Developer&nbsp;&nbsp;·&nbsp;&nbsp;Cloud &amp; DevOps
             Engineer&nbsp;&nbsp;·&nbsp;&nbsp;ML/DL Practitioner
           </motion.p>
         </motion.div>
 
-        {/* DESCEND — soft anchor at the bottom */}
-        <motion.div
+        {/* DESCEND — soft anchor at the bottom; a real link into the Journey */}
+        <motion.a
+          href="#journey"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 2.4, duration: 1.6 }}
-          className="absolute bottom-10 left-8 flex items-center gap-4 sm:left-14 lg:left-24 xl:left-32"
+          className="absolute bottom-10 left-8 flex min-h-11 items-center gap-4 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#A8C7FF] sm:left-14 lg:left-24 xl:left-32"
         >
           <motion.span
             animate={{ scaleY: [0, 1, 1, 0.2, 1] }}
@@ -72,23 +79,26 @@ export default function Hero() {
             className="block h-12 w-px origin-top bg-gradient-to-b from-transparent via-slate-500 to-transparent"
           />
           <motion.span
-            animate={{ opacity: [0.35, 0.8, 0.35] }}
+            // breathing kept, but never below a readable floor (was 0.35 → ~1.8:1)
+            animate={{ opacity: [0.72, 1, 0.72] }}
             transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
-            className="text-[10px] font-light uppercase tracking-[0.6em] text-slate-500"
+            className="text-[10px] font-light uppercase tracking-[0.6em] text-slate-300"
           >
             Descend
           </motion.span>
-        </motion.div>
+        </motion.a>
       </div>
 
       {/* ------------------------------------------- VISUAL · right 55%
-          On small screens the same scene settles behind the text, dimmed. */}
-      <div className="pointer-events-none absolute inset-0 opacity-40 md:left-[45%] md:right-0 md:opacity-100">
-        <MoonScene />
+          On phones the scene takes the upper part of the screen, above the name. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[58%] md:inset-y-0 md:left-[45%] md:right-0 md:h-auto">
+        <MoonScene active={inView} reduced={reduced} />
       </div>
 
       {/* Soft vignette to melt the scene edges into the dark */}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(2,6,23,0.75)_100%)]" />
+      {/* the same still film grain as the Journey, so the site reads as one film */}
+      <FilmFinish vignette={false} />
     </section>
   )
 }
